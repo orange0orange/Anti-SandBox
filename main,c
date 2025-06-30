@@ -1,0 +1,224 @@
+BOOL SandboxieDetect()
+{
+	wchar_t* DllName = L"sbiedll";
+	PCSTR FunctionNameToSearch = "SbieDll_Hook";
+
+
+	PVOID DLLaddress = FindDllThroughBase(DllName);
+	if (DLLaddress) 
+		printf("\n\tDLL base address of %ls : %x \n", DllName, DLLaddress);
+	else 
+		return FALSE;
+
+	PVOID FunctionAddress = pGetFunctionHandle(FunctionNameToSearch, DLLaddress);
+	printf("\taddress of the function %s : %x\n", FunctionNameToSearch, FunctionAddress);
+
+	if (FunctionAddress)
+		return TRUE;
+
+	return FALSE;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+BOOL WMIExec()
+{
+	HRESULT hr = 0;
+
+	IWbemLocator* locator = NULL;
+	IWbemServices* services = NULL;
+	IEnumWbemClassObject* results = NULL;
+
+	BSTR resource = SysAllocString(L"ROOT\\CIMV2");
+	BSTR language = SysAllocString(L"WQL");
+	BSTR query = SysAllocString(L"SELECT * FROM Win32_PortConnector");
+
+	hr = CoInitializeEx(0, COINIT_MULTITHREADED);
+	hr = CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL);
+
+	hr = CoCreateInstance(&CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER, &IID_IWbemLocator, (LPVOID*)&locator);
+	hr = locator->lpVtbl->ConnectServer(locator, resource, NULL, NULL, NULL, 0, NULL, NULL, &services);
+
+	hr = services->lpVtbl->ExecQuery(services, language, query, WBEM_FLAG_BIDIRECTIONAL, NULL, &results);
+
+
+	if (results != NULL) 
+	{
+		IWbemClassObject* result = NULL;
+		ULONG returnedCount = 0;
+		unsigned int count = 0;
+
+		while ((hr = results->lpVtbl->Next(results, WBEM_INFINITE, 1, &result, &returnedCount)) == S_OK)
+		{
+			VARIANT name;
+			VARIANT speed;
+
+			hr = result->lpVtbl->Get(result, L"Name", 0, &name, 0, 0);
+			hr = result->lpVtbl->Get(result, L"MaxClockSpeed", 0, &speed, 0, 0);
+
+			count++;
+			result->lpVtbl->Release(result);
+		}
+
+		if (!count)
+			return FALSE;
+	}
+	else
+		return FALSE;
+
+	results->lpVtbl->Release(results);
+	services->lpVtbl->Release(services);
+	locator->lpVtbl->Release(locator);
+
+	CoUninitialize();
+
+	SysFreeString(query);
+	SysFreeString(language);
+	SysFreeString(resource);
+	
+	return TRUE;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+BOOL UserNameCheck()
+{
+	LPSTR names[] = 
+	{
+		L"USER",
+		//test ------------------------
+		//L"dude",
+		//test ------------------------
+		L"Anonymous",
+		L"ANDY",
+		L"COMPUTERNAME",
+		L"CUCKOO",
+		L"SANDBOX",
+		L"NMSDBOX",
+		L"MUELLER-PC",
+		L"JOHN-PC",
+		L"7SILVIA",
+		L"HANSPETER-PC",
+		L"XXXX-OX",
+		L"CWSX",
+		L"WILBERT-SC",
+		L"XPAMAST-SC" 
+	};
+
+
+	LPSTR  infoBuf[INFO_BUFFER_SIZE];
+	DWORD  bufCharCount = INFO_BUFFER_SIZE;
+
+	unsigned int Iterator = 0;
+	unsigned int IteratorSize = sizeof(names) / sizeof(names[0]);
+
+	BOOL Result = FALSE;
+
+	
+	GetUserName(infoBuf, &bufCharCount);
+
+
+	for (Iterator = 0; Iterator < IteratorSize; Iterator++)
+	{
+		if (!lstrcmp(infoBuf, names[Iterator]))
+		{
+			Result = TRUE;
+			break;
+		}
+	}
+
+	if (Result)
+		return TRUE;
+
+	return FALSE;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+
+BOOL CuckooMemoryArtifact(BOOL* found)
+{
+	DATA_ENTRY_t suspicius_data[] =
+	{
+		DATA_SUSP_ENTRY_STRING("cuckoomon"),
+		DATA_SUSP_ENTRY_STRING("New_NtDeleteFile"),
+		DATA_SUSP_ENTRY_STRING("retaddr-check"),
+		DATA_SUSP_ENTRY_STRING("HookHandle"),
+		DATA_SUSP_ENTRY_STRING("nhook detection"),
+		DATA_SUSP_ENTRY_STRING("distorm"),
+		DATA_SUSP_ENTRY_STRING("capstone"),
+		DATA_SUSP_ENTRY_STRING("Cuckoo")
+	};
+
+	char* actual_addr = (char*)0;
+	int Iterator = 0;
+	BOOL found_or_endmemory = FALSE;
+	BOOL exception_ex = FALSE;
+	*found = FALSE;
+
+	printf("\t[INFO] Searching suspicius data in my memory: ");
+
+	do
+	{
+		for (int Iterator = 0; Iterator < ARRAYSIZE(suspicius_data); Iterator++)
+		{
+			__try
+			{
+				if (actual_addr != suspicius_data[Iterator].data && memcmp(suspicius_data[Iterator].data, actual_addr, suspicius_data[Iterator].size) == 0)
+				{
+					__try
+					{
+						if (memcmp(actual_addr + suspicius_data[Iterator].size, SUSP_CTRL_STRING, sizeof(SUSP_CTRL_STRING)) != 0)
+						{
+							char buff[255];
+							memset(buff, 0, sizeof(buff));
+							__try
+							{
+								for (int j = 0; actual_addr[j] != 0 && j < sizeof(buff) - 1; j++)
+								{
+									buff[j] = actual_addr[j];
+									if (!isprint(buff[j]))
+										buff[j] = ' ';
+								}
+							}
+							__except (filterExceptionExecuteHandler(GetExceptionCode(), GetExceptionInformation()))
+							{
+							}
+							*found = TRUE;
+							//printf("\nSuspicius string found at: 0x%08X!: %.*s\n    Fragment found: %s", actual_addr, suspicius_data[Iterator].size, suspicius_data[Iterator].data, buff);
+							//printf("Suspicius_string_found_%.*s", suspicius_data[Iterator].size, suspicius_data[Iterator].data);
+							memset(buff, 0, sizeof(buff));
+							actual_addr += suspicius_data[Iterator].size;
+							exception_ex = TRUE;
+						}
+					}
+					__except (filterExceptionExecuteHandler(GetExceptionCode(), GetExceptionInformation()))
+					{
+					}
+				}
+			}
+			__except (filterExceptionExecuteHandler(GetExceptionCode(), GetExceptionInformation()))
+			{
+				exception_ex = TRUE;
+
+				if ((DWORD)actual_addr >= ((DWORD)GetModuleHandleExW & 0xFFFFF000)) 
+					found_or_endmemory = TRUE;
+				else
+				{
+					Iterator = -1; 
+					actual_addr += PAGE_SIZE;
+					actual_addr = (char*)((DWORD)actual_addr & 0xFFFFF000);
+					printf("\b\b\b\b\b\b\b\b\b\b0x%08X", actual_addr);
+				}
+			}
+		}
+		if (exception_ex == FALSE)
+			actual_addr++;
+		exception_ex = FALSE;
+	} while (found_or_endmemory == FALSE);
+	//printf("");
+
+	return 0;
+}
+
